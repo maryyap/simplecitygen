@@ -1,7 +1,7 @@
 import decodes as dc
 
 from math import radians
-from random import random
+from random import random, randint
 from Queue import PriorityQueue
 
 from pyqtree import Index
@@ -16,6 +16,14 @@ def add_segment_to_map(my_segment, segments, qTree):
     qTree.insert(my_segment, my_segment.bbox)
 
 def check_and_fix_segment(my_segment, segments, qTree):
+    #return True
+    # Reject segements outside of bounds (keeps it closer to the population)
+    if (max(my_segment.spt.x, my_segment.spt.y,
+            my_segment.ept.x, my_segment.ept.y) > 20000 or
+        min(my_segment.spt.x, my_segment.spt.y,
+                my_segment.ept.x, my_segment.ept.y) < -20000):
+        return False
+
     candidates = qTree.intersect(my_segment.bbox)
 
     for candidate in candidates:
@@ -29,8 +37,8 @@ def check_and_fix_segment(my_segment, segments, qTree):
         # If segment can extend to create intersection, create intersection
         intersect_pt = candidate.can_extend_to_intersect(my_segment)
         if intersect_pt:
-            if my_segment.vec.angle_deg(candidate.vec) < 30:
-                return False
+            # if my_segment.vec.angle_deg(candidate.vec) < 30:
+            #     return False
             my_segment.ept = intersect_pt
             my_segment.continue_growing = False
             return True
@@ -39,8 +47,8 @@ def check_and_fix_segment(my_segment, segments, qTree):
         # If segment intersects, we should shorten to the intersection
         intersect_pt = candidate.intersects(my_segment)
         if intersect_pt:
-            if my_segment.vec.angle_deg(candidate.vec) < 30:
-                return False
+            # if my_segment.vec.angle_deg(candidate.vec) < 30:
+            #     return False
             my_segment.ept = intersect_pt
             my_segment.continue_growing = False
             return True
@@ -55,9 +63,10 @@ def generate_possible_highway_segments(prev_segment, population):
     """
     segments = []
 
-    straight_seg = RoadSegment.extend_straight(prev_segment)
-    angle_seg = RoadSegment.extend_angle(prev_segment)
+    straight_seg = RoadSegment.extend(prev_segment)
+    angle_seg = RoadSegment.extend(prev_segment, curve=True)
 
+    # Highway Extension
     if (population.along_road(angle_seg) > population.along_road(straight_seg)):
         seg = angle_seg
     else:
@@ -65,70 +74,57 @@ def generate_possible_highway_segments(prev_segment, population):
 
     segments.append(seg)
 
+    # Highway Branching
     if population.along_road(seg) > 0.1:
-        if random() < 0.05:
+        if random() < 0.02: #2% prob
             # branch right
-            segments.append(
-                RoadSegment.extend_angle(
-                    prev_segment,
-                    offset = radians(-90),
-                    branch = True))
-        if random() < 0.05:
+            segments.append(RoadSegment.branch(prev_segment, offset = radians(-90)))
+        if random() < 0.02: #2% prob
             # branch left
-            segments.append(
-                RoadSegment.extend_angle(
-                    prev_segment,
-                    offset = radians(90),
-                    branch = True))
+            segments.append(RoadSegment.branch(prev_segment, offset = radians(90)))
 
     return segments
 
-def generate_branch_segments(prev_segment):
+def generate_regular_branches(prev_segment, priority):
     segments = []
-    if random() < 0.4:
+    if random() < 0.2:
         # branch right
-        segments.append(
-            RoadSegment.extend_angle(
-                prev_segment,
-                offset = radians(-90),
-                branch = True,
-                force_highway = False))
+        segments.append(RoadSegment.branch(prev_segment, offset = radians(-90), force_highway = False))
 
-    if random() < 0.4:
+    if random() < 0.2:
         # branch left
-        segments.append(
-            RoadSegment.extend_angle(
-                prev_segment,
-                offset = radians(90),
-                branch = True,
-                force_highway = False))
+        segments.append(RoadSegment.branch(prev_segment, offset = radians(90), force_highway = False))
 
-    return segments
+    new_priority = priority+5 if prev_segment.is_highway else priority
+    return [(new_priority, s) for s in segments]
 
 def generate_possible_segments(prev_segment, priority, population, priorityQ):
     if (prev_segment.continue_growing == False):
         return False
 
-    new_branches = []
+    possible_segments = []
 
-    straight_seg = RoadSegment.extend_straight(prev_segment)
-    straight_pop = population.along_road(straight_seg)
-
+    # Extend or branch highway (highway_segs are always more highways)
     if prev_segment.is_highway:
         highway_segs = generate_possible_highway_segments(prev_segment, population)
-        new_branches.extend([(priority, s) for s in highway_segs])
-    elif straight_pop > 0.1:
-        new_branches.append((priority, straight_seg))
+        possible_segments.extend([(priority, s) for s in highway_segs])
 
-    if straight_pop > 0.1:
-        branch_segs = generate_branch_segments(prev_segment)
-        new_priority = priority + 5 if prev_segment.is_highway else priority
-        new_branches.extend([(new_priority, s) for s in branch_segs])
+    # If we are in a populated area, grow roads
+    extend_seg = RoadSegment.extend(prev_segment, curve=True)
+    if population.along_road(extend_seg) > 0.1:
+        if not prev_segment.is_highway:
+            # Always extend a regular road
+            possible_segments.append((priority, extend_seg))
 
-    for branch_tuple in new_branches:
-        priorityQ.put(branch_tuple)
+    # If we are in a really populated area, create road branches
+    if population.along_road(extend_seg) > 0.2:
+        regular_branches = generate_regular_branches(prev_segment, priority)
+        possible_segments.extend(regular_branches)
 
-def generate():
+    for segt in possible_segments:
+        priorityQ.put(segt)
+
+def generate(num):
     population = Population(random())
     priorityQ = PriorityQueue()
 
@@ -145,37 +141,45 @@ def generate():
     segments = []
     qTree = Index(bbox=(-20000, -20000, 20000, 20000))
 
-    while (not priorityQ.empty() and len(segments) < 2000):
+    while (len(segments) < num):
+        #wrote this because it gets stuck and priorityQ gets empty.
+        #this starts the whole process over again.
+        if priorityQ.empty():
+            start_pt = Point(randint(-15000, 15000), randint(-15000, 15000))
+            root_segment = RoadSegment(start_pt, start_vec, is_highway = True)
+            opposite_root = RoadSegment(start_pt, -start_vec, is_highway = True)
+            priorityQ.put((0, root_segment))
+            priorityQ.put((0, opposite_root))
+
         (priority, next_segment) = priorityQ.get()
 
-        # local_constraints
-        try:
-            accepted = check_and_fix_segment(next_segment, segments, qTree)
-            if (accepted):
-                add_segment_to_map(next_segment, segments, qTree)
-                generate_possible_segments(next_segment, priority + 1, population, priorityQ)
-        except:
-            continue
+        accepted = check_and_fix_segment(next_segment, segments, qTree)
+        if (accepted):
+            add_segment_to_map(next_segment, segments, qTree)
+            generate_possible_segments(next_segment, priority + 1, population, priorityQ)
 
     return (segments, population)
 
 def rhino():
-    (segments, population) = generate()
-    out = dc.make_out(dc.Outies.Rhino)
+    (segments, population) = generate(3000)
+    rlayer = dc.make_out(dc.Outies.Rhino, name="roads")
+    player = dc.make_out(dc.Outies.Rhino, name="population")
 
     def heatmap():
         p_points = []
-        for x in range(-20000, 20000, 500):
-            for y in range(-20000, 20000, 500):
+        for x in range(-20000, 20000, 1000):
+            for y in range(-20000, 20000, 1000):
                 p = Point(x, y)
                 p.set_color(Color.HSB(population.at(x, y), 1, 1))
-                out.put(p)
-                out.draw(p)
+                player.put(p)
+                player.draw(p)
+
+    heatmap()
 
     for segment in segments:
         if segment.is_highway:
             segment.set_color(Color.HSB(1,1,1))
-        out.put(segment)
-        out.draw(segment)
+        rlayer.put(segment)
+        rlayer.draw(segment)
 
 rhino()

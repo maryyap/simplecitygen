@@ -10,22 +10,32 @@ class RoadSegment(Segment): #extending decodes seg
         self.continue_growing = True
 
     @staticmethod
-    def extend_straight(seg):
-        return RoadSegment(seg.ept, seg.vec, seg.is_highway)
+    def extend(seg, curve=False):
+        if curve:
+            sign = -1 * (seg.vec * Vec.ux()).z
+            angle = copysign(seg.vec.angle(Vec.ux()), sign)
+            if seg.is_highway:
+                angle += radians(util.random_angle(3))
+            else:
+                angle += radians(util.random_angle(5))
+
+            ept = Point(seg.ept.x + seg.length * cos(angle),
+                        seg.ept.y + seg.length * sin(angle))
+            return RoadSegment(seg.ept, ept, seg.is_highway)
+        else:
+            return RoadSegment(seg.ept, seg.vec, seg.is_highway)
 
     @staticmethod
-    def extend_angle(seg, offset = 0, branch = False, force_highway=None):
+    def branch(seg, offset = 0, force_highway=None):
+        if not (force_highway == None):
+            highway = force_highway
+        else:
+            highway = seg.is_highway
+
         sign = -1 * (seg.vec * Vec.ux()).z
         angle = copysign(seg.vec.angle(Vec.ux()), sign)
         angle += offset
-        if not branch and seg.is_highway:
-            angle += radians(util.random_angle(3))
-        else:
-            angle += radians(util.random_angle(15))
-
-        highway = seg.is_highway
-        if not (force_highway == None):
-            highway = force_highway
+        angle += radians(util.random_angle(15))
 
         if highway:
             length = 400
@@ -49,7 +59,7 @@ class RoadSegment(Segment): #extending decodes seg
         # http://stackoverflow.com/a/565282/786339
         # p = self.spt
         # q = other.spt
-        #
+        #ZXC
         # r = self.vec
         # s = other.vec
         #
@@ -60,8 +70,8 @@ class RoadSegment(Segment): #extending decodes seg
             return False
 
         xsec = Intersector()
-        if xsec.of(Segment(self.spt, self.ept), Segment(other.spt, other.ept)):
-            return xsec.results[0]
+        if xsec.of(Segment(self.spt, self.ept), Segment(other.spt, other.ept)): #returns True/false
+            return xsec.results[0] #if true, puts it into results.
 
         return False
 
